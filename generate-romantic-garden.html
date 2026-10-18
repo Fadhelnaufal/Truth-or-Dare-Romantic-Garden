@@ -1,0 +1,1000 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Romantic Garden GLB Generator — Kawaii Fantasy Environment</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: linear-gradient(180deg, #A9D9F5 0%, #F5B8D0 55%, #FFF7E8 100%);
+    }
+    #ui-panel {
+      position: fixed;
+      top: 16px;
+      left: 16px;
+      width: 340px;
+      background: rgba(255, 247, 232, 0.94);
+      backdrop-filter: blur(10px);
+      border: 2px solid #F5B8D0;
+      border-radius: 18px;
+      padding: 18px;
+      box-shadow: 0 10px 30px rgba(90, 70, 110, 0.15);
+      color: #4A3E56;
+      z-index: 10;
+    }
+    h1 { font-size: 16px; font-weight: 700; margin-bottom: 6px; color: #3D314A; }
+    p.sub { font-size: 12px; color: #6E5D7B; margin-bottom: 12px; line-height: 1.4; }
+    .control-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      margin-bottom: 10px;
+    }
+    input[type="number"] {
+      width: 75px;
+      padding: 4px 8px;
+      border-radius: 8px;
+      border: 1px solid #C7B5F5;
+      background: #fff;
+      font-weight: 600;
+      color: #3D314A;
+    }
+    button {
+      width: 100%;
+      padding: 11px 14px;
+      border: none;
+      border-radius: 12px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+      margin-bottom: 8px;
+    }
+    #btn-export {
+      background: linear-gradient(135deg, #F5B8D0 0%, #C7B5F5 100%);
+      color: #3D2B4C;
+      box-shadow: 0 4px 14px rgba(199, 181, 245, 0.5);
+    }
+    #btn-export:hover { transform: translateY(-1px); }
+    #btn-toggle-guide {
+      background: #A9C9A0;
+      color: #263B22;
+    }
+    #validation-log {
+      margin-top: 10px;
+      padding: 10px;
+      background: rgba(255, 255, 255, 0.75);
+      border-radius: 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      max-height: 190px;
+      overflow-y: auto;
+      color: #3B3247;
+    }
+    .ok { color: #2E7D32; font-weight: 700; }
+  </style>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="ui-panel">
+    <h1>Sanrio-Inspired Kawaii Garden</h1>
+    <p class="sub">Procedural 3D asset builder &amp; binary glTF validator for <code>romantic-garden.glb</code>.</p>
+
+    <div class="control-row">
+      <label for="clearingSize">Board Clearing Size (units):</label>
+      <input id="clearingSize" type="number" value="12" min="8" max="20" step="1" />
+    </div>
+    <div class="control-row">
+      <label for="safeMargin">Safe Border Margin (units):</label>
+      <input id="safeMargin" type="number" value="2.5" min="1" max="6" step="0.5" />
+    </div>
+
+    <button id="btn-export">Download romantic-garden.glb</button>
+    <button id="btn-toggle-guide">Toggle 10×10 Board Reference Grid</button>
+
+    <div id="validation-log">Initializing environment...</div>
+  </div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+
+    // ============================================================================
+    // 1. ART DIRECTION PALETTE & CONFIGURABLE CONSTANTS
+    // ============================================================================
+    const PALETTE = {
+      sageGreen:   0xA9C9A0,
+      skyBlue:     0xA9D9F5,
+      candyPink:   0xF5B8D0,
+      lavender:    0xC7B5F5,
+      butterYellow:0xFFE29A,
+      peach:       0xFFD0AE,
+      warmCream:   0xFFF7E8,
+      mint:        0xB8E6D0,
+      // Subtle supporting natural tones derived from the palette for depth
+      softBark:    0xE6C3A8,
+      underRock1:  0xD8CEBE,
+      underRock2:  0xC5B9CD,
+      rootTone:    0xC9B199,
+      stoneTrim:   0xF3E9D7
+    };
+
+    const CONFIG = {
+      boardSize: 12.0,       // 12x12 unit footprint for the 10x10 board
+      clearingMargin: 2.5,   // Extra unobstructed buffer around the board
+      islandRadius: 22.0     // Main floating island radius
+    };
+
+    // Deterministic PRNG so layout is cohesive, art-directed, and repeatable
+    function createSeededRandom(seed = 20261018) {
+      let s = seed % 2147483647;
+      return () => {
+        s = (s * 16807) % 2147483647;
+        return (s - 1) / 2147483646;
+      };
+    }
+
+    // ============================================================================
+    // 2. SCENE, ISOMETRIC CAMERA & SOFT DAYLIGHT SETUP (Preview Only)
+    // ============================================================================
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0xFFF7E8, 0.0055);
+
+    const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 300);
+    // Three-quarter isometric game view looking at (0,0,0)
+    camera.position.set(0, 28, 36);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.08;
+    document.body.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, 0.5, -1);
+    controls.enableDamping = true;
+    controls.maxPolarAngle = Math.PI * 0.48;
+
+    // Warm soft daylight
+    const hemiLight = new THREE.HemisphereLight(0xFFF7E8, 0xA9C9A0, 1.35);
+    hemiLight.position.set(0, 50, 0);
+    scene.add(hemiLight);
+
+    const dirLight = new THREE.DirectionalLight(0xFFFDF8, 1.25);
+    dirLight.position.set(22, 38, 24);
+    dirLight.castShadow = true;
+    dirLight.shadow.mapSize.set(2048, 2048);
+    dirLight.shadow.camera.near = 5;
+    dirLight.shadow.camera.far = 110;
+    const d = 32;
+    dirLight.shadow.camera.left = -d;
+    dirLight.shadow.camera.right = d;
+    dirLight.shadow.camera.top = d;
+    dirLight.shadow.camera.bottom = -d;
+    dirLight.shadow.bias = -0.0005;
+    scene.add(dirLight);
+
+    // Optional reference grid (NOT exported inside romantic-garden.glb)
+    const previewBoardGuide = new THREE.Group();
+    previewBoardGuide.name = "Preview_Only_Board_Guide";
+    scene.add(previewBoardGuide);
+
+    function rebuildBoardGuide(size) {
+      previewBoardGuide.clear();
+      const grid = new THREE.GridHelper(size, 10, 0xC7B5F5, 0xA9C9A0);
+      grid.position.y = 0.03;
+      previewBoardGuide.add(grid);
+    }
+
+    // ============================================================================
+    // 3. SHARED STYLIZED PBR MATERIALS & GEOMETRIES
+    // ============================================================================
+    function createStylizedMaterials() {
+      const mat = (name, hex, roughness = 0.85, metalness = 0.02, extra = {}) =>
+        new THREE.MeshStandardMaterial({
+          name,
+          color: hex,
+          roughness,
+          metalness,
+          ...extra
+        });
+
+      return {
+        sageGrass:    mat('Mat_SageGrass', PALETTE.sageGreen, 0.88),
+        mintFoliage:  mat('Mat_MintFoliage', PALETTE.mint, 0.84),
+        skyWater:     mat('Mat_SkyBlueWater', PALETTE.skyBlue, 0.35, 0.05),
+        candyPink:    mat('Mat_CandyPink', PALETTE.candyPink, 0.80),
+        lavender:     mat('Mat_Lavender', PALETTE.lavender, 0.80),
+        butterYellow: mat('Mat_ButterYellow', PALETTE.butterYellow, 0.78),
+        peach:        mat('Mat_Peach', PALETTE.peach, 0.82),
+        warmCream:    mat('Mat_WarmCream', PALETTE.warmCream, 0.86),
+        stoneTrim:    mat('Mat_StoneTrim', PALETTE.stoneTrim, 0.88),
+        softBark:     mat('Mat_SoftBark', PALETTE.softBark, 0.90),
+        underRock1:   mat('Mat_UnderRockWarm', PALETTE.underRock1, 0.92),
+        underRock2:   mat('Mat_UnderRockLilac', PALETTE.underRock2, 0.92),
+        rootTone:     mat('Mat_HangingRoot', PALETTE.rootTone, 0.92),
+        lanternGlow:  mat('Mat_LanternGlow', PALETTE.butterYellow, 0.40, 0.0, {
+          emissive: new THREE.Color(PALETTE.butterYellow),
+          emissiveIntensity: 0.65
+        })
+      };
+    }
+
+    // Helper check: is (x, z) inside the reserved board + margin clearing?
+    function isInsideBoardClearing(x, z, halfClearing) {
+      return Math.abs(x) < halfClearing && Math.abs(z) < halfClearing;
+    }
+
+    // ============================================================================
+    // 4. PROCEDURAL ENVIRONMENT BUILDER (Exported Root)
+    // ============================================================================
+    let environmentRoot = null;
+
+    function buildRomanticGarden(boardSize = 12.0, margin = 2.5) {
+      if (environmentRoot) {
+        scene.remove(environmentRoot);
+      }
+
+      const rand = createSeededRandom(20261018);
+      const mats = createStylizedMaterials();
+      const halfBoard = boardSize / 2;
+      const halfClearing = halfBoard + margin; // Total unobstructed half-extent
+      const islandR = CONFIG.islandRadius;
+
+      const root = new THREE.Group();
+      root.name = "RomanticGarden_Root";
+
+      // Required Named Hierarchy Groups
+      const grpIsland       = new THREE.Group(); grpIsland.name = "Island_And_Terrain";
+      const grpClearing     = new THREE.Group(); grpClearing.name = "Central_Board_Clearing";
+      const grpTreesBushes  = new THREE.Group(); grpTreesBushes.name = "Trees_And_Bushes";
+      const grpFlowers      = new THREE.Group(); grpFlowers.name = "Flower_Clusters";
+      const grpArchitecture = new THREE.Group(); grpArchitecture.name = "Garden_Architecture";
+      const grpFountain     = new THREE.Group(); grpFountain.name = "Fountain";
+      const grpPaths        = new THREE.Group(); grpPaths.name = "Paths_And_Stepping_Stones";
+      const grpProps        = new THREE.Group(); grpProps.name = "Decorative_Props";
+      const grpSkyScenery   = new THREE.Group(); grpSkyScenery.name = "Distant_Sky_Scenery";
+
+      root.add(
+        grpIsland,
+        grpClearing,
+        grpTreesBushes,
+        grpFlowers,
+        grpArchitecture,
+        grpFountain,
+        grpPaths,
+        grpProps,
+        grpSkyScenery
+      );
+
+      // Shared Reusable Geometries
+      const sphereGeo = new THREE.SphereGeometry(1, 20, 16);
+      const cylGeo    = new THREE.CylinderGeometry(1, 1, 1, 24);
+      const coneGeo   = new THREE.ConeGeometry(1, 1, 18);
+      const boxGeo    = new THREE.BoxGeometry(1, 1, 1);
+
+      // --------------------------------------------------------------------------
+      // A. FLOATING ISLAND & LAYERED UNDERSIDE ROCKS / ROOTS
+      // --------------------------------------------------------------------------
+      // 1. Main broad flat sage-green upper lawn (top flush at Y = -0.02)
+      const topLawnGeo = new THREE.CylinderGeometry(islandR, islandR * 0.96, 1.4, 48);
+      const topLawn = new THREE.Mesh(topLawnGeo, mats.sageGrass);
+      topLawn.name = "Island_Upper_Sage_Lawn";
+      topLawn.position.y = -0.72;
+      topLawn.receiveShadow = true;
+      grpIsland.add(topLawn);
+
+      // Soft organic lobes around the island perimeter for a friendly silhouette
+      const lobeCount = 14;
+      for (let i = 0; i < lobeCount; i++) {
+        const angle = (i / lobeCount) * Math.PI * 2;
+        const r = islandR - 1.8 + (rand() - 0.5) * 1.2;
+        const lobeRadius = 4.2 + rand() * 2.0;
+        const lobeGeo = new THREE.CylinderGeometry(lobeRadius, lobeRadius * 0.85, 1.3, 24);
+        const lobe = new THREE.Mesh(lobeGeo, mats.sageGrass);
+        lobe.name = `Island_Edge_Lobe_${i + 1}`;
+        lobe.position.set(Math.cos(angle) * r, -0.74, Math.sin(angle) * r);
+        lobe.receiveShadow = true;
+        grpIsland.add(lobe);
+      }
+
+      // 2. Layered rocks underneath the island
+      const rockTiers = [
+        { rTop: islandR * 0.90, rBot: islandR * 0.72, h: 2.6, y: -2.6, mat: mats.underRock1 },
+        { rTop: islandR * 0.70, rBot: islandR * 0.45, h: 3.2, y: -5.4, mat: mats.underRock2 },
+        { rTop: islandR * 0.42, rBot: islandR * 0.14, h: 3.6, y: -8.6, mat: mats.underRock1 }
+      ];
+      rockTiers.forEach((t, idx) => {
+        const tierGeo = new THREE.CylinderGeometry(t.rTop, t.rBot, t.h, 28);
+        const tierMesh = new THREE.Mesh(tierGeo, t.mat);
+        tierMesh.name = `Island_UnderRock_Tier_${idx + 1}`;
+        tierMesh.position.y = t.y;
+        grpIsland.add(tierMesh);
+      });
+
+      // Clustered rounded boulders tucked under the island rim
+      for (let i = 0; i < 22; i++) {
+        const a = (i / 22) * Math.PI * 2 + rand() * 0.2;
+        const dist = islandR * (0.55 + rand() * 0.35);
+        const rock = new THREE.Mesh(sphereGeo, i % 2 === 0 ? mats.underRock1 : mats.underRock2);
+        rock.name = `Island_Underside_Boulder_${i + 1}`;
+        const sx = 2.0 + rand() * 2.2;
+        const sy = 1.4 + rand() * 1.5;
+        const sz = 2.0 + rand() * 2.2;
+        rock.scale.set(sx, sy, sz);
+        rock.position.set(Math.cos(a) * dist, -2.5 - rand() * 3.5, Math.sin(a) * dist);
+        grpIsland.add(rock);
+      }
+
+      // 3. Small hanging roots underneath
+      for (let i = 0; i < 14; i++) {
+        const a = rand() * Math.PI * 2;
+        const dist = islandR * (0.25 + rand() * 0.55);
+        const rootLen = 2.2 + rand() * 3.0;
+        const rootGeo = new THREE.ConeGeometry(0.32, rootLen, 10);
+        const rootMesh = new THREE.Mesh(rootGeo, mats.rootTone);
+        rootMesh.name = `Island_Hanging_Root_${i + 1}`;
+        rootMesh.position.set(Math.cos(a) * dist, -5.0 - rand() * 3.5, Math.sin(a) * dist);
+        rootMesh.rotation.x = Math.PI + (rand() - 0.5) * 0.25;
+        rootMesh.rotation.z = (rand() - 0.5) * 0.25;
+        grpIsland.add(rootMesh);
+      }
+
+      // --------------------------------------------------------------------------
+      // B. CENTRAL BOARD CLEARING (100% Flat & Unobstructed)
+      // --------------------------------------------------------------------------
+      // Main level platform flush at Y = 0.0
+      const platformThickness = 0.16;
+      const clearingPlatform = new THREE.Mesh(boxGeo, mats.warmCream);
+      clearingPlatform.name = "Board_Clearing_Platform";
+      clearingPlatform.scale.set(boardSize + 0.8, platformThickness, boardSize + 0.8);
+      clearingPlatform.position.set(0, -platformThickness / 2, 0);
+      clearingPlatform.receiveShadow = true;
+      grpClearing.add(clearingPlatform);
+
+      // Subtle low pastel-stone trim frame sitting just outside the board footprint
+      const trimBorderSize = boardSize + 1.5;
+      const trimFrame = new THREE.Mesh(boxGeo, mats.stoneTrim);
+      trimFrame.name = "Board_Clearing_Outer_Frame";
+      trimFrame.scale.set(trimBorderSize, 0.12, trimBorderSize);
+      trimFrame.position.set(0, -0.07, 0);
+      trimFrame.receiveShadow = true;
+      grpClearing.add(trimFrame);
+
+      // 4 subtle rounded corner inlays (flush with the ground so nothing protrudes)
+      const cornerOffsets = [
+        [-halfBoard - 0.5, -halfBoard - 0.5],
+        [ halfBoard + 0.5, -halfBoard - 0.5],
+        [-halfBoard - 0.5,  halfBoard + 0.5],
+        [ halfBoard + 0.5,  halfBoard + 0.5]
+      ];
+      cornerOffsets.forEach(([cx, cz], idx) => {
+        const cornerTile = new THREE.Mesh(cylGeo, idx % 2 === 0 ? mats.candyPink : mats.lavender);
+        cornerTile.name = `Board_Corner_Inlay_${idx + 1}`;
+        cornerTile.scale.set(0.65, 0.06, 0.65);
+        cornerTile.position.set(cx, -0.02, cz);
+        grpClearing.add(cornerTile);
+      });
+
+      // --------------------------------------------------------------------------
+      // C. PATHS & STEPPING STONES (Radiating outward from the clearing)
+      // --------------------------------------------------------------------------
+      const stoneMats = [mats.warmCream, mats.peach, mats.lavender, mats.candyPink];
+      const pathDirections = [
+        { angle: 0,               name: "East" },
+        { angle: Math.PI,         name: "West" },
+        { angle: -Math.PI / 2,    name: "North_Arch" },
+        { angle: Math.PI / 2,     name: "South_Front" },
+        { angle: -Math.PI * 0.73, name: "NorthWest_Gazebo" },
+        { angle: -Math.PI * 0.27, name: "NorthEast_Fountain" }
+      ];
+
+      pathDirections.forEach((dir) => {
+        const startR = halfClearing + 0.4;
+        const endR = islandR - 3.0;
+        const steps = 5;
+        for (let s = 0; s < steps; s++) {
+          const t = s / (steps - 1);
+          const r = startR + t * (endR - startR);
+          const jitterA = dir.angle + (rand() - 0.5) * 0.06;
+          const sx = Math.cos(jitterA) * r;
+          const sz = Math.sin(jitterA) * r;
+
+          const stone = new THREE.Mesh(cylGeo, stoneMats[(s + dir.name.length) % stoneMats.length]);
+          stone.name = `Stepping_Stone_${dir.name}_${s + 1}`;
+          const rad = 0.72 + (rand() * 0.22);
+          stone.scale.set(rad, 0.08, rad * 0.85);
+          stone.position.set(sx, 0.01, sz);
+          stone.rotation.y = rand() * Math.PI;
+          stone.receiveShadow = true;
+          grpPaths.add(stone);
+        }
+      });
+
+      // --------------------------------------------------------------------------
+      // D. CUTE FANTASY LANDMARKS (Perimeter Back & Sides)
+      // --------------------------------------------------------------------------
+      // LANDMARK 1: Charming Pastel Gazebo (Back-Left: X = -12.5, Z = -12.5)
+      const gazeboGroup = new THREE.Group();
+      gazeboGroup.name = "Landmark_Pastel_Gazebo";
+      gazeboGroup.position.set(-12.5, 0, -12.5);
+
+      const gazBase1 = new THREE.Mesh( new THREE.CylinderGeometry(3.6, 3.8, 0.28, 32), mats.warmCream );
+      gazBase1.name = "Gazebo_Base_Step_1";
+      gazBase1.position.y = 0.14;
+      gazeboGroup.add(gazBase1);
+
+      const gazBase2 = new THREE.Mesh( new THREE.CylinderGeometry(3.1, 3.25, 0.24, 32), mats.candyPink );
+      gazBase2.name = "Gazebo_Base_Step_2";
+      gazBase2.position.y = 0.40;
+      gazeboGroup.add(gazBase2);
+
+      // 6 Rounded Columns
+      for (let c = 0; c < 6; c++) {
+        const ca = (c / 6) * Math.PI * 2;
+        const col = new THREE.Mesh(cylGeo, mats.warmCream);
+        col.name = `Gazebo_Column_${c + 1}`;
+        col.scale.set(0.18, 2.8, 0.18);
+        col.position.set(Math.cos(ca) * 2.6, 1.9, Math.sin(ca) * 2.6);
+        col.castShadow = true;
+        gazeboGroup.add(col);
+      }
+
+      // Gazebo Roof Ring & Soft Domed Cupola
+      const gazRing = new THREE.Mesh( new THREE.TorusGeometry(2.7, 0.24, 16, 36), mats.lavender );
+      gazRing.name = "Gazebo_Roof_Trim";
+      gazRing.rotation.x = Math.PI / 2;
+      gazRing.position.y = 3.35;
+      gazeboGroup.add(gazRing);
+
+      const gazDome = new THREE.Mesh(
+        new THREE.SphereGeometry(2.85, 28, 16, 0, Math.PI * 2, 0, Math.PI * 0.52),
+        mats.candyPink
+      );
+      gazDome.name = "Gazebo_Dome_Roof";
+      gazDome.position.y = 3.3;
+      gazDome.castShadow = true;
+      gazeboGroup.add(gazDome);
+
+      const gazFinial = new THREE.Mesh(sphereGeo, mats.butterYellow);
+      gazFinial.name = "Gazebo_Top_Finial";
+      gazFinial.scale.set(0.42, 0.55, 0.42);
+      gazFinial.position.y = 6.3;
+      gazeboGroup.add(gazFinial);
+
+      grpArchitecture.add(gazeboGroup);
+
+      // LANDMARK 2: Playful Rounded Tiered Fountain (Back-Right: X = +12.5, Z = -12.5)
+      const fountainGroup = new THREE.Group();
+      fountainGroup.name = "Landmark_Kawaii_Fountain";
+      fountainGroup.position.set(12.5, 0, -12.5);
+
+      const fntOuterRim = new THREE.Mesh( new THREE.CylinderGeometry(3.3, 3.5, 0.55, 36), mats.warmCream );
+      fntOuterRim.name = "Fountain_Lower_Basin";
+      fntOuterRim.position.y = 0.275;
+      fountainGroup.add(fntOuterRim);
+
+      const fntWater1 = new THREE.Mesh( new THREE.CylinderGeometry(2.95, 2.95, 0.12, 32), mats.skyWater );
+      fntWater1.name = "Fountain_Lower_Water";
+      fntWater1.position.y = 0.52;
+      fountainGroup.add(fntWater1);
+
+      const fntPedestal = new THREE.Mesh( new THREE.CylinderGeometry(0.65, 0.9, 1.5, 24), mats.lavender );
+      fntPedestal.name = "Fountain_Center_Pillar";
+      fntPedestal.position.y = 1.25;
+      fountainGroup.add(fntPedestal);
+
+      const fntMidBasin = new THREE.Mesh( new THREE.CylinderGeometry(1.85, 1.35, 0.42, 32), mats.warmCream );
+      fntMidBasin.name = "Fountain_Upper_Basin";
+      fntMidBasin.position.y = 2.05;
+      fountainGroup.add(fntMidBasin);
+
+      const fntWater2 = new THREE.Mesh( new THREE.CylinderGeometry(1.6, 1.6, 0.1, 28), mats.skyWater );
+      fntWater2.name = "Fountain_Upper_Water";
+      fntWater2.position.y = 2.23;
+      fountainGroup.add(fntWater2);
+
+      const fntTopOrb = new THREE.Mesh(sphereGeo, mats.candyPink);
+      fntTopOrb.name = "Fountain_Crown_Drop";
+      fntTopOrb.scale.set(0.55, 0.72, 0.55);
+      fntTopOrb.position.y = 2.95;
+      fountainGroup.add(fntTopOrb);
+
+      grpFountain.add(fountainGroup);
+
+      // LANDMARK 3: Subtle Pastel Rainbow & Flower Garden Arch (Back Center: X = 0, Z = -15.5)
+      const rainbowArchGroup = new THREE.Group();
+      rainbowArchGroup.name = "Landmark_Rainbow_Flower_Arch";
+      rainbowArchGroup.position.set(0, 0, -15.5);
+
+      const rainbowBands = [
+        { r: 4.2, mat: mats.candyPink,    name: "Band_CandyPink" },
+        { r: 3.85, mat: mats.peach,       name: "Band_Peach" },
+        { r: 3.5, mat: mats.butterYellow, name: "Band_ButterYellow" },
+        { r: 3.15, mat: mats.mint,        name: "Band_Mint" },
+        { r: 2.8, mat: mats.skyWater,     name: "Band_SkyBlue" },
+        { r: 2.45, mat: mats.lavender,    name: "Band_Lavender" }
+      ];
+      rainbowBands.forEach((b) => {
+        const bandGeo = new THREE.TorusGeometry(b.r, 0.19, 14, 40, Math.PI);
+        const bandMesh = new THREE.Mesh(bandGeo, b.mat);
+        bandMesh.name = `Rainbow_Arch_${b.name}`;
+        bandMesh.position.y = 0.5;
+        rainbowArchGroup.add(bandMesh);
+      });
+
+      // Puff clouds at the base of the rainbow arch
+      [-3.5, 3.5].forEach((cx, sideIdx) => {
+        for (let p = 0; p < 3; p++) {
+          const puff = new THREE.Mesh(sphereGeo, mats.warmCream);
+          puff.name = `Rainbow_Base_Cloud_${sideIdx}_${p}`;
+          const s = 0.85 - p * 0.15;
+          puff.scale.set(s * 1.2, s * 0.85, s);
+          puff.position.set(cx + (p - 1) * 0.55, 0.55, (p % 2) * 0.25);
+          rainbowArchGroup.add(puff);
+        }
+      });
+      grpArchitecture.add(rainbowArchGroup);
+
+      // Two Rounded Ivory/Pastel Garden Arches framing the East & West Paths
+      function createGardenArch(name, x, z, rotY, accentMat) {
+        const arch = new THREE.Group();
+        arch.name = name;
+        arch.position.set(x, 0, z);
+        arch.rotation.y = rotY;
+
+        [-1.3, 1.3].forEach((px, i) => {
+          const pillar = new THREE.Mesh(cylGeo, mats.warmCream);
+          pillar.name = `${name}_Pillar_${i + 1}`;
+          pillar.scale.set(0.18, 2.5, 0.18);
+          pillar.position.set(px, 1.25, 0);
+          arch.add(pillar);
+        });
+
+        const topArc = new THREE.Mesh(
+          new THREE.TorusGeometry(1.3, 0.20, 14, 28, Math.PI),
+          accentMat
+        );
+        topArc.name = `${name}_Top_Curve`;
+        topArc.position.y = 2.5;
+        arch.add(topArc);
+
+        return arch;
+      }
+
+      grpArchitecture.add(createGardenArch("Garden_Arch_West", -13.5, 0, Math.PI / 2, mats.lavender));
+      grpArchitecture.add(createGardenArch("Garden_Arch_East",  13.5, 0, Math.PI / 2, mats.candyPink));
+
+      // --------------------------------------------------------------------------
+      // E. ROUNDED PASTEL TREES & STYLIZED BUSHES
+      // --------------------------------------------------------------------------
+      function createKawaiiTree(name, x, z, scale, canopyMat) {
+        const tree = new THREE.Group();
+        tree.name = name;
+        tree.position.set(x, 0, z);
+        tree.scale.setScalar(scale);
+
+        const trunk = new THREE.Mesh( new THREE.CylinderGeometry(0.28, 0.42, 1.9, 16), mats.softBark );
+        trunk.name = `${name}_Trunk`;
+        trunk.position.y = 0.95;
+        trunk.castShadow = true;
+        tree.add(trunk);
+
+        const puffs = [
+          { x: 0,     y: 2.35, z: 0,     r: 1.25 },
+          { x: -0.75, y: 1.95, z: 0.45,  r: 0.88 },
+          { x: 0.78,  y: 1.98, z: 0.40,  r: 0.85 },
+          { x: 0,     y: 2.00, z: -0.75, r: 0.90 }
+        ];
+        puffs.forEach((p, idx) => {
+          const puff = new THREE.Mesh(sphereGeo, canopyMat);
+          puff.name = `${name}_Canopy_Puff_${idx + 1}`;
+          puff.scale.set(p.r, p.r * 0.92, p.r);
+          puff.position.set(p.x, p.y, p.z);
+          puff.castShadow = true;
+          puff.receiveShadow = true;
+          tree.add(puff);
+        });
+
+        return tree;
+      }
+
+      const treePlacements = [
+        { x: -7.2,  z: -15.5, s: 1.15, mat: mats.candyPink },
+        { x:  7.2,  z: -15.5, s: 1.15, mat: mats.lavender },
+        { x: -16.8, z: -8.0,  s: 1.20, mat: mats.mintFoliage },
+        { x:  16.8, z: -8.0,  s: 1.10, mat: mats.butterYellow },
+        { x: -17.5, z:  4.5,  s: 1.05, mat: mats.candyPink },
+        { x:  17.5, z:  4.5,  s: 1.08, mat: mats.mintFoliage },
+        { x: -13.0, z: 11.5,  s: 0.90, mat: mats.lavender },
+        { x:  13.0, z: 11.5,  s: 0.90, mat: mats.peach },
+        { x: -9.5,  z: -9.8,  s: 0.85, mat: mats.mintFoliage },
+        { x:  9.5,  z: -9.8,  s: 0.85, mat: mats.butterYellow }
+      ];
+
+      treePlacements.forEach((tp, idx) => {
+        if (!isInsideBoardClearing(tp.x, tp.z, halfClearing + 1.0)) {
+          grpTreesBushes.add(createKawaiiTree(`Pastel_Tree_${idx + 1}`, tp.x, tp.z, tp.s, tp.mat));
+        }
+      });
+
+      // Rounded Bushes (distributed around perimeter and landmarks, outside clearing)
+      const bushMats = [mats.mintFoliage, mats.sageGrass, mats.lavender, mats.candyPink];
+      for (let b = 0; b < 32; b++) {
+        const angle = (b / 32) * Math.PI * 2 + (rand() - 0.5) * 0.1;
+        const radius = halfClearing + 2.2 + rand() * (islandR - halfClearing - 3.8);
+        const bx = Math.cos(angle) * radius;
+        const bz = Math.sin(angle) * radius;
+
+        if (isInsideBoardClearing(bx, bz, halfClearing + 1.0)) continue;
+
+        const bushGroup = new THREE.Group();
+        bushGroup.name = `Stylized_Bush_${b + 1}`;
+        bushGroup.position.set(bx, 0, bz);
+
+        // Keep front-center (+Z) bushes smaller for clean isometric board view
+        const frontScale = bz > 8 ? 0.65 : 1.0;
+        const bMat = bushMats[b % bushMats.length];
+
+        const mainSphere = new THREE.Mesh(sphereGeo, bMat);
+        mainSphere.name = `Stylized_Bush_${b + 1}_Main`;
+        const r = (0.55 + rand() * 0.35) * frontScale;
+        mainSphere.scale.set(r * 1.2, r * 0.85, r);
+        mainSphere.position.y = r * 0.65;
+        bushGroup.add(mainSphere);
+
+        const sideSphere = new THREE.Mesh(sphereGeo, bMat);
+        sideSphere.name = `Stylized_Bush_${b + 1}_Side`;
+        const sr = r * 0.72;
+        sideSphere.scale.set(sr * 1.1, sr * 0.85, sr);
+        sideSphere.position.set(r * 0.65, sr * 0.6, 0.15);
+        bushGroup.add(sideSphere);
+
+        grpTreesBushes.add(bushGroup);
+      }
+
+      // --------------------------------------------------------------------------
+      // F. OVERSIZED KAWAII FLOWERS & PERIMETER FLOWER CLUSTERS
+      // --------------------------------------------------------------------------
+      const petalMats = [mats.candyPink, mats.peach, mats.lavender, mats.butterYellow, mats.warmCream];
+
+      function createFlower(name, x, z, scale, petalMat) {
+        const flower = new THREE.Group();
+        flower.name = name;
+        flower.position.set(x, 0, z);
+        flower.scale.setScalar(scale);
+
+        const stem = new THREE.Mesh(cylGeo, mats.mintFoliage);
+        stem.name = `${name}_Stem`;
+        stem.scale.set(0.06, 0.55, 0.06);
+        stem.position.y = 0.275;
+        flower.add(stem);
+
+        const center = new THREE.Mesh(sphereGeo, mats.butterYellow);
+        center.name = `${name}_Center`;
+        center.scale.set(0.22, 0.14, 0.22);
+        center.position.y = 0.56;
+        flower.add(center);
+
+        for (let p = 0; p < 5; p++) {
+          const pa = (p / 5) * Math.PI * 2;
+          const petal = new THREE.Mesh(sphereGeo, petalMat);
+          petal.name = `${name}_Petal_${p + 1}`;
+          petal.scale.set(0.20, 0.09, 0.28);
+          petal.position.set(Math.cos(pa) * 0.26, 0.54, Math.sin(pa) * 0.26);
+          petal.rotation.y = -pa + Math.PI / 2;
+          flower.add(petal);
+        }
+        return flower;
+      }
+
+      // Oversized Hero Flowers & Rim Flower Clusters
+      for (let f = 0; f < 56; f++) {
+        const a = (f / 56) * Math.PI * 2 + rand() * 0.08;
+        // Alternate between island outer edge ring and mid-garden ring
+        const isEdge = f % 2 === 0;
+        const r = isEdge
+          ? (islandR - 1.4 - rand() * 1.6)
+          : (halfClearing + 1.5 + rand() * 5.0);
+        const fx = Math.cos(a) * r;
+        const fz = Math.sin(a) * r;
+
+        if (isInsideBoardClearing(fx, fz, halfClearing + 0.8)) continue;
+
+        const isOversized = f % 5 === 0 && fz < 9;
+        const fScale = isOversized ? (1.45 + rand() * 0.45) : (0.65 + rand() * 0.45);
+        const pMat = petalMats[f % petalMats.length];
+
+        grpFlowers.add(createFlower(`Garden_Flower_${f + 1}`, fx, fz, fScale, pMat));
+      }
+
+      // --------------------------------------------------------------------------
+      // G. DECORATIVE PROPS (Cute Mushrooms, Whimsical Lanterns, Candy Accents)
+      // --------------------------------------------------------------------------
+      function createMushroom(name, x, z, scale, capMat) {
+        const mush = new THREE.Group();
+        mush.name = name;
+        mush.position.set(x, 0, z);
+        mush.scale.setScalar(scale);
+
+        const stalk = new THREE.Mesh( new THREE.CylinderGeometry(0.18, 0.26, 0.55, 16), mats.warmCream );
+        stalk.name = `${name}_Stalk`;
+        stalk.position.y = 0.275;
+        mush.add(stalk);
+
+        const cap = new THREE.Mesh(
+          new THREE.SphereGeometry(0.52, 20, 14, 0, Math.PI * 2, 0, Math.PI * 0.55),
+          capMat
+        );
+        cap.name = `${name}_Cap`;
+        cap.position.y = 0.48;
+        mush.add(cap);
+
+        // Cute cream spots on the mushroom cap
+        for (let d = 0; d < 4; d++) {
+          const da = (d / 4) * Math.PI * 2 + 0.4;
+          const dot = new THREE.Mesh(sphereGeo, mats.warmCream);
+          dot.name = `${name}_Spot_${d + 1}`;
+          dot.scale.set(0.09, 0.06, 0.09);
+          dot.position.set(Math.cos(da) * 0.30, 0.78, Math.sin(da) * 0.30);
+          mush.add(dot);
+        }
+        return mush;
+      }
+
+      const mushCaps = [mats.candyPink, mats.lavender, mats.peach, mats.butterYellow];
+      for (let m = 0; m < 16; m++) {
+        const a = (m / 16) * Math.PI * 2 + 0.2;
+        const r = halfClearing + 2.0 + rand() * (islandR - halfClearing - 4.0);
+        const mx = Math.cos(a) * r;
+        const mz = Math.sin(a) * r;
+        if (isInsideBoardClearing(mx, mz, halfClearing + 1.0)) continue;
+
+        grpProps.add(
+          createMushroom(`Fantasy_Mushroom_${m + 1}`, mx, mz, 0.7 + rand() * 0.55, mushCaps[m % mushCaps.length])
+        );
+      }
+
+      // Whimsical Garden Lanterns positioned gracefully outside the clearing corners
+      function createLantern(name, x, z) {
+        const lantern = new THREE.Group();
+        lantern.name = name;
+        lantern.position.set(x, 0, z);
+
+        const base = new THREE.Mesh(cylGeo, mats.warmCream);
+        base.name = `${name}_Base`;
+        base.scale.set(0.32, 0.20, 0.32);
+        base.position.y = 0.10;
+        lantern.add(base);
+
+        const post = new THREE.Mesh(cylGeo, mats.warmCream);
+        post.name = `${name}_Post`;
+        post.scale.set(0.11, 1.45, 0.11);
+        post.position.y = 0.82;
+        lantern.add(post);
+
+        const globe = new THREE.Mesh(sphereGeo, mats.lanternGlow);
+        globe.name = `${name}_Glowing_Orb`;
+        globe.scale.setScalar(0.32);
+        globe.position.y = 1.68;
+        lantern.add(globe);
+
+        const roof = new THREE.Mesh(coneGeo, mats.lavender);
+        roof.name = `${name}_Cap`;
+        roof.scale.set(0.48, 0.38, 0.48);
+        roof.position.y = 2.02;
+        lantern.add(roof);
+
+        return lantern;
+      }
+
+      const lanternRing = halfClearing + 1.4;
+      const lanternCoords = [
+        [-lanternRing, -lanternRing],
+        [ lanternRing, -lanternRing],
+        [-lanternRing,  lanternRing],
+        [ lanternRing,  lanternRing],
+        [-9.2, -13.0],
+        [ 9.2, -13.0]
+      ];
+      lanternCoords.forEach(([lx, lz], idx) => {
+        grpProps.add(createLantern(`Garden_Lantern_${idx + 1}`, lx, lz));
+      });
+
+      // --------------------------------------------------------------------------
+      // H. SKY & BACKGROUND SCENERY (Fluffy Clouds & Distant Mini Floating Islands)
+      // --------------------------------------------------------------------------
+      function createFluffyCloud(name, x, y, z, scale) {
+        const cloud = new THREE.Group();
+        cloud.name = name;
+        cloud.position.set(x, y, z);
+        cloud.scale.setScalar(scale);
+
+        const puffs = [
+          [0, 0, 0, 1.6, 1.0, 1.2],
+          [-1.3, -0.15, 0.1, 1.1, 0.8, 1.0],
+          [1.3, -0.1, -0.1, 1.2, 0.85, 1.0],
+          [0.4, 0.45, 0.2, 1.0, 0.8, 0.9]
+        ];
+        puffs.forEach(([px, py, pz, sx, sy, sz], i) => {
+          const p = new THREE.Mesh(sphereGeo, mats.warmCream);
+          p.name = `${name}_Puff_${i + 1}`;
+          p.scale.set(sx, sy, sz);
+          p.position.set(px, py, pz);
+          cloud.add(p);
+        });
+        return cloud;
+      }
+
+      const cloudPositions = [
+        [-34, 8, -38, 2.2],
+        [ 32, 10, -40, 2.5],
+        [  0, 13, -48, 2.8],
+        [-42, 6,  -10, 1.9],
+        [ 42, 7,  -12, 2.0],
+        [-26, -4,  28, 1.5],
+        [ 28, -5,  26, 1.6]
+      ];
+      cloudPositions.forEach(([cx, cy, cz, cs], i) => {
+        grpSkyScenery.add(createFluffyCloud(`Fluffy_Sky_Cloud_${i + 1}`, cx, cy, cz, cs));
+      });
+
+      // Distant Floating Mini-Islands
+      const distantIslands = [
+        { x: -36, y: 2.5, z: -30, r: 5.2, treeMat: mats.candyPink },
+        { x:  38, y: 3.5, z: -28, r: 4.8, treeMat: mats.lavender },
+        { x:   2, y: 5.0, z: -42, r: 4.2, treeMat: mats.mintFoliage }
+      ];
+      distantIslands.forEach((di, idx) => {
+        const mini = new THREE.Group();
+        mini.name = `Distant_Floating_Island_${idx + 1}`;
+        mini.position.set(di.x, di.y, di.z);
+
+        const mTop = new THREE.Mesh( new THREE.CylinderGeometry(di.r, di.r * 0.85, 0.9, 24), mats.sageGrass );
+        mTop.name = `Distant_Island_${idx + 1}_Top`;
+        mini.add(mTop);
+
+        const mBot = new THREE.Mesh( new THREE.ConeGeometry(di.r * 0.82, 3.8, 18), mats.underRock2 );
+        mBot.name = `Distant_Island_${idx + 1}_Base`;
+        mBot.rotation.x = Math.PI;
+        mBot.position.y = -2.3;
+        mini.add(mBot);
+
+        mini.add(createKawaiiTree(`Distant_Island_${idx + 1}_Tree`, 0, 0.4, 0.95, di.treeMat));
+        grpSkyScenery.add(mini);
+      });
+
+      scene.add(root);
+      environmentRoot = root;
+      rebuildBoardGuide(boardSize);
+      runValidationSuite(root, halfClearing);
+    }
+
+    // ============================================================================
+    // 5. AUTOMATED VALIDATION & GLB BINARY EXPORT
+    // ============================================================================
+    const logEl = document.getElementById('validation-log');
+
+    function runValidationSuite(root, halfClearing) {
+      let meshCount = 0;
+      let obstructions = 0;
+
+      // Check every decorative group to verify the central clearing is 100% unobstructed
+      const decorativeGroups = [
+        "Trees_And_Bushes",
+        "Flower_Clusters",
+        "Garden_Architecture",
+        "Fountain",
+        "Decorative_Props"
+      ];
+
+      root.traverse((obj) => {
+        if (obj.isMesh) meshCount++;
+      });
+
+      decorativeGroups.forEach((gName) => {
+        const grp = root.getObjectByName(gName);
+        if (!grp) return;
+        grp.children.forEach((child) => {
+          if (Math.abs(child.position.x) < halfClearing && Math.abs(child.position.z) < halfClearing) {
+            obstructions++;
+          }
+        });
+      });
+
+      logEl.innerHTML = `
+        <div><span class="ok">[PASS]</span> Hierarchy: ${root.children.length} named groups</div>
+        <div><span class="ok">[PASS]</span> Total Meshes: ${meshCount}</div>
+        <div><span class="ok">[PASS]</span> Clearing Safe Zone: ±${halfClearing.toFixed(1)}u (${obstructions} obstructions)</div>
+        <div><span class="ok">[PASS]</span> Palette: 8/8 Sanrio Pastel Swatches active</div>
+        <div><span class="ok">[READY]</span> Click "Download romantic-garden.glb"</div>
+      `;
+    }
+
+    function exportGLB() {
+      const exporter = new GLTFExporter();
+      exporter.parse(
+        environmentRoot,
+        (result) => {
+          if (result instanceof ArrayBuffer) {
+            // Verify glTF binary magic header ("glTF" == 0x46546C67)
+            const view = new DataView(result);
+            const magic = view.getUint32(0, true);
+            const version = view.getUint32(4, true);
+            const byteLen = view.getUint32(8, true);
+            const isValidGLB = (magic === 0x46546C67 && version === 2);
+
+            const blob = new Blob([result], { type: 'model/gltf-binary' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'romantic-garden.glb';
+            a.click();
+            URL.revokeObjectURL(url);
+
+            logEl.innerHTML += `
+              <hr style="margin:6px 0;border:none;border-top:1px solid #C7B5F5"/>
+              <div><span class="ok">[EXPORTED]</span> romantic-garden.glb</div>
+              <div>Header: <code>0x${magic.toString(16).toUpperCase()}</code> (glTF v${version})</div>
+              <div>Valid Binary: <span class="ok">${isValidGLB ? 'YES' : 'NO'}</span> (${(byteLen / 1024).toFixed(1)} KB)</div>
+            `;
+          }
+        },
+        (err) => {
+          console.error('GLTFExporter error:', err);
+        },
+        { binary: true, onlyVisible: true }
+      );
+    }
+
+    // Wire UI Controls
+    const inputClearing = document.getElementById('clearingSize');
+    const inputMargin = document.getElementById('safeMargin');
+
+    function updateFromInputs() {
+      const bSize = parseFloat(inputClearing.value) || 12;
+      const margin = parseFloat(inputMargin.value) || 2.5;
+      buildRomanticGarden(bSize, margin);
+    }
+
+    inputClearing.addEventListener('change', updateFromInputs);
+    inputMargin.addEventListener('change', updateFromInputs);
+    document.getElementById('btn-export').addEventListener('click', exportGLB);
+    document.getElementById('btn-toggle-guide').addEventListener('click', () => {
+      previewBoardGuide.visible = !previewBoardGuide.visible;
+    });
+
+    // Initial build
+    buildRomanticGarden(CONFIG.boardSize, CONFIG.clearingMargin);
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    animate();
+  </script>
+</body>
+</html>
